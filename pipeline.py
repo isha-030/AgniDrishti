@@ -258,12 +258,13 @@ class AgniDrishtiPipeline:
 
         color = priority_colors.get(priority, "#3b82f6")
         status_label = ind_status.value.replace("_", " ") if ind_status != IndustrialStatus.NOT_APPLICABLE else ""
+        status_html = f"<p style='margin:2px 0; font-size:12px;'><b>Status:</b> {status_label}</p>" if status_label else ""
 
         popup_html = (
             f"<div style='font-family:sans-serif; min-width:200px;'>"
             f"<h4 style='margin:0 0 4px 0; color:{color}; font-size:14px; font-weight:bold;'>"
             f"{priority.value} PRIORITY &bull; {classification_badges.get(classification, classification.value)}</h4>"
-            f"{f'<p style=\"margin:2px 0; font-size:12px;\"><b>Status:</b> {status_label}</p>' if status_label else ''}"
+            f"{status_html}"
             f"<p style='margin:2px 0; font-size:12px;'><b>FRP:</b> {hotspot.frp:.1f} MW</p>"
             f"<p style='margin:2px 0; font-size:12px;'><b>Facility:</b> {facility.name if facility else 'None within buffer'}</p>"
             f"<p style='margin:2px 0; font-size:12px;'><b>Cluster:</b> {cluster.size} point(s), {cluster.total_frp:.1f} MW total</p>"
