@@ -216,8 +216,14 @@ def get_hotspots(
 def get_summary():
     """Quick counts for a dashboard header/stat cards."""
     hotspots = load_hotspots()
-    summary = {"total": len(hotspots), "by_priority": {}, "by_source_type": {}}
+    summary = {
+        "total": len(hotspots),
+        "by_priority": {"HIGH": 0, "MEDIUM": 0, "LOW": 0},
+        "by_source_type": {"INDUSTRIAL": 0, "NATURAL": 0, "UNCERTAIN": 0},
+    }
     for h in hotspots:
-        summary["by_priority"][h.priority] = summary["by_priority"].get(h.priority, 0) + 1
-        summary["by_source_type"][h.source_type] = summary["by_source_type"].get(h.source_type, 0) + 1
+        prio = str(h.priority).upper()
+        summary["by_priority"][prio] = summary["by_priority"].get(prio, 0) + 1
+        st = str(h.source_type).upper()
+        summary["by_source_type"][st] = summary["by_source_type"].get(st, 0) + 1
     return summary

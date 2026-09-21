@@ -41,18 +41,78 @@ app.add_middleware(
 # Include hotspot endpoints
 app.include_router(hotspots_router)
 
+import os
+from pathlib import Path
+from fastapi.responses import FileResponse
+from database import save_hotspots
+
 # Global pipeline and client instances
 pipeline = AgniDrishtiPipeline()
 firms_client = FirmsClient()
 
-# Cached last analysis result for instant GeoJSON map retrieval
+# Cached analysis results: real CSV dataset vs explicitly requested demo dataset
 _last_analysis_response: Optional[BatchAnalysisResponse] = None
-
-
-import os
-from fastapi.responses import FileResponse
+_demo_analysis_response: Optional[BatchAnalysisResponse] = None
 
 frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
+
+async def _get_active_batch() -> BatchAnalysisResponse:
+    """
+    Ensures the real CSV batch analysis response is loaded (from cache or local dataset).
+    Never falls back to demo data silently.
+    """
+    global _last_analysis_response
+    if _last_analysis_response is not None:
+        return _last_analysis_response
+
+    base_dir = Path(__file__).resolve().parent
+    raw_csv = base_dir / "dataset" / "firms_raw_india.csv"
+    if not raw_csv.exists():
+        raw_csv = Path("dataset/firms_raw_india.csv")
+
+    if not raw_csv.exists():
+        err_msg = f"Dataset file not found at {raw_csv}. Default CSV dataset must exist."
+        print(f"ERROR loading CSV dataset: {err_msg}")
+        raise FileNotFoundError(err_msg)
+
+    try:
+        with open(raw_csv, "r", encoding="utf-8") as f:
+            hotspots = IngestionEngine.from_csv_text(f.read())
+        if not hotspots:
+            raise ValueError(f"No hotspot records parsed from {raw_csv}")
+        _last_analysis_response = await pipeline.analyze_batch(hotspots)
+        try:
+            save_hotspots(_last_analysis_response.results)
+        except Exception as err:
+            print(f"Notice: Could not sync hotspots to SQLite: {err}")
+        return _last_analysis_response
+    except Exception as e:
+        print(f"ERROR loading CSV dataset: {e}")
+        raise
+
+
+async def _get_demo_batch() -> BatchAnalysisResponse:
+    """
+    Generates or returns cached demo analysis response when explicitly requested.
+    Never overwrites the real CSV _last_analysis_response.
+    """
+    global _demo_analysis_response
+    if _demo_analysis_response is None:
+        demo_hotspots = firms_client.get_demo_hotspots()
+        _demo_analysis_response = await pipeline.analyze_batch(demo_hotspots)
+    return _demo_analysis_response
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Pre-load the default CSV dataset on application startup."""
+    try:
+        await _get_active_batch()
+        if _last_analysis_response:
+            print(f"[OK] Default CSV dataset successfully loaded ({_last_analysis_response.total_hotspots} hotspots)")
+    except Exception as e:
+        print(f"ERROR during startup CSV dataset load: {e}")
 
 
 @app.get("/", tags=["General"])
@@ -146,11 +206,7 @@ async def run_demo():
     - Case D: Punjab crop stubble burning (Agricultural / Low-Medium Priority)
     - Case E: Uncertain transition detection with conflicting evidence
     """
-    global _last_analysis_response
-    demo_hotspots = firms_client.get_demo_hotspots()
-    result = await pipeline.analyze_batch(demo_hotspots)
-    _last_analysis_response = result
-    return result
+    return await _get_demo_batch()
 
 
 @app.get("/api/hotspots/geojson", tags=["GIS"])
@@ -158,20 +214,21 @@ async def get_hotspots_geojson(use_demo: bool = Query(False, description="Force 
     """
     Returns an RFC 7946 compliant GeoJSON FeatureCollection formatted directly
     for Leaflet / GIS dashboard layers with color-coded priority markers and popups.
+    Uses the real CSV dataset by default.
     """
-    global _last_analysis_response
-    if use_demo or _last_analysis_response is None:
-        demo_hotspots = firms_client.get_demo_hotspots()
-        _last_analysis_response = await pipeline.analyze_batch(demo_hotspots)
+    if use_demo:
+        batch = await _get_demo_batch()
+    else:
+        batch = await _get_active_batch()
 
-    features = [r.geojson_feature for r in _last_analysis_response.results if r.geojson_feature]
+    features = [r.geojson_feature for r in batch.results if r.geojson_feature]
 
     return {
         "type": "FeatureCollection",
         "metadata": {
             "total_hotspots": len(features),
-            "generated_at": _last_analysis_response.results[0].acq_datetime.isoformat()
-            if _last_analysis_response.results
+            "generated_at": batch.results[0].acq_datetime.isoformat()
+            if batch.results
             else None,
         },
         "features": features,
@@ -179,17 +236,18 @@ async def get_hotspots_geojson(use_demo: bool = Query(False, description="Force 
 
 
 @app.get("/api/clusters", tags=["GIS"])
-async def get_clusters():
+async def get_clusters(use_demo: bool = Query(False, description="Force run on demo data")):
     """
     Returns spatial clusters computed by DBSCAN with polygon bounding boxes and aggregate FRP.
+    Uses the real CSV dataset by default.
     """
-    global _last_analysis_response
-    if _last_analysis_response is None:
-        demo_hotspots = firms_client.get_demo_hotspots()
-        _last_analysis_response = await pipeline.analyze_batch(demo_hotspots)
+    if use_demo:
+        batch = await _get_demo_batch()
+    else:
+        batch = await _get_active_batch()
 
     cluster_features = []
-    for c in _last_analysis_response.clusters:
+    for c in batch.clusters:
         if c.bbox and len(c.bbox) == 4:
             min_lat, min_lon, max_lat, max_lon = c.bbox
             # If cluster has only 1 point, expand slightly for polygon visualization
@@ -226,7 +284,7 @@ async def get_clusters():
 
     return {
         "type": "FeatureCollection",
-        "cluster_count": len(_last_analysis_response.clusters),
+        "cluster_count": len(batch.clusters),
         "features": cluster_features,
     }
 
@@ -270,30 +328,6 @@ async def query_firms_area(
 # ==============================================================================
 # Frontend-Supporting Intelligence Endpoints (Dynamic, Zero-Hardcoding)
 # ==============================================================================
-
-async def _get_active_batch() -> BatchAnalysisResponse:
-    """Ensures a batch analysis response is loaded (from cache, local dataset, or demo)."""
-    global _last_analysis_response
-    if _last_analysis_response is not None:
-        return _last_analysis_response
-
-    import os
-    from pathlib import Path
-    raw_csv = Path("dataset/firms_raw_india.csv")
-    if raw_csv.exists():
-        try:
-            with open(raw_csv, "r", encoding="utf-8") as f:
-                hotspots = IngestionEngine.from_csv_text(f.read())
-            if hotspots:
-                _last_analysis_response = await pipeline.analyze_batch(hotspots)
-                return _last_analysis_response
-        except Exception:
-            pass
-
-    # Fallback to demo
-    demo_hotspots = firms_client.get_demo_hotspots()
-    _last_analysis_response = await pipeline.analyze_batch(demo_hotspots)
-    return _last_analysis_response
 
 
 @app.get("/api/dashboard/summary", tags=["Dashboard"])
