@@ -68,10 +68,13 @@ def read_root():
 
 
 @app.get("/health", tags=["General"])
+@app.get("/api/health", tags=["General"])
+@app.get("/healthz", tags=["General"])
 def health_check():
-    """Health check endpoint."""
+    """Health check endpoint for cloud hosts, Render, Kubernetes, and uptime monitors."""
     return {
         "status": "healthy",
+        "service": "AgniDrishti Satellite Intelligence API",
         "pipeline_ready": True,
         "database": "sqlite_connected",
     }
