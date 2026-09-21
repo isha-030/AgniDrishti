@@ -49,9 +49,18 @@ firms_client = FirmsClient()
 _last_analysis_response: Optional[BatchAnalysisResponse] = None
 
 
+import os
+from fastapi.responses import FileResponse
+
+frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
+
 @app.get("/", tags=["General"])
 def read_root():
-    """Returns overview of AgniDrishti service."""
+    """Serves frontend UI if built, or API overview."""
+    index_file = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
     return {
         "service": "AgniDrishti",
         "description": "Satellite Thermal Hotspot Intelligence & Industrial Anomaly Detection",

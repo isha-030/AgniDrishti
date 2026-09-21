@@ -14,10 +14,26 @@ import type {
   IncidentReport,
 } from '../types';
 
-const BASE_URL = import.meta.env.VITE_API_URL || '/api';
+function getApiBaseUrl(): string {
+  if (import.meta.env.VITE_API_URL) {
+    return (import.meta.env.VITE_API_URL as string).replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    // If not running on localhost/127.0.0.1 and not running on the backend web service directly,
+    // route API requests to the live Render backend Web Service
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== 'agnidrishti-okjq.onrender.com') {
+      return 'https://agnidrishti-okjq.onrender.com/api';
+    }
+  }
+  return '/api';
+}
+
+const BASE_URL = getApiBaseUrl();
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const fullUrl = url.startsWith('http') ? url : `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+  const cleanPath = url.startsWith('/') ? url : `/${url}`;
+  const fullUrl = url.startsWith('http') ? url : `${BASE_URL}${cleanPath}`;
   const response = await fetch(fullUrl, {
     headers: {
       'Content-Type': 'application/json',
@@ -29,6 +45,19 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`API error (${response.status}): ${errorText || response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json') && !contentType.includes('application/geo+json')) {
+    const text = await response.text();
+    if (text.trim().startsWith('<')) {
+      throw new Error(`Backend is starting up or returned an HTML error page. Please retry in a few moments.`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid JSON response: ${text.slice(0, 100)}`);
+    }
   }
 
   return response.json();
